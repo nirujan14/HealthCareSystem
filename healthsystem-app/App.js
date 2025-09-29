@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from "./src/context/AuthContext";
 import AuthNavigator from "./app/AuthNavigator";
 import AppNavigator from "./app/AppNavigator";
 import { ActivityIndicator, View } from "react-native";
+import { useFonts, Inter_400Regular, Inter_600SemiBold, Inter_700Bold, Inter_800ExtraBold } from "@expo-google-fonts/inter";
 
 function Root() {
   const { user, loading } = useAuth();
@@ -17,8 +18,13 @@ function Root() {
 }
 
 export default function App() {
-  console.log("🌍 API Base:", process.env.EXPO_PUBLIC_API_URL);
-  console.log("⚙️ App Env:", process.env.EXPO_PUBLIC_APP_ENV);
+  const [fontsLoaded] = useFonts({
+    Inter_400Regular,
+    Inter_600SemiBold,
+    Inter_700Bold,
+    Inter_800ExtraBold,
+  });
+  if (!fontsLoaded) return null;
 
   return (
     <AuthProvider>

@@ -1,31 +1,28 @@
 import React, { useEffect, useState } from "react";
 import { View, Text, FlatList } from "react-native";
+import PCard from "../../src/components/PCard";
+import colors from "../../src/constants/colors";
 import client from "../../src/api/client";
 
 export default function RecordsScreen() {
   const [records, setRecords] = useState([]);
-
-  const load = async () => {
-    const { data } = await client.get("/records");
-    setRecords(data);
-  };
-
+  const load = async () => { const { data } = await client.get("/records"); setRecords(data); };
   useEffect(() => { load(); }, []);
 
   return (
-    <View style={{ padding: 16 }}>
+    <View style={{ flex: 1, backgroundColor: colors.background, padding: 16 }}>
       <FlatList
         data={records}
-        keyExtractor={r => r._id}
+        keyExtractor={(r) => r._id}
         renderItem={({ item }) => (
-          <View style={{ padding: 12, borderWidth: 1, borderRadius: 8, marginBottom: 8 }}>
-            <Text style={{ fontWeight: "600" }}>{item.hospital} • {item.department}</Text>
-            <Text>{new Date(item.visitDate).toLocaleDateString()}</Text>
-            <Text>Dx: {item.diagnosis || "-"}</Text>
-            <Text>Rx: {item.prescription || "-"}</Text>
-          </View>
+          <PCard style={{ marginBottom: 12 }}>
+            <Text style={{ fontWeight: "800", color: colors.text }}>{item.hospital} • {item.department}</Text>
+            <Text style={{ color: colors.textMuted }}>{new Date(item.visitDate).toLocaleDateString()}</Text>
+            <Text style={{ marginTop: 8, color: colors.text }}><Text style={{ fontWeight: "700" }}>Diagnosis: </Text>{item.diagnosis || "-"}</Text>
+            <Text style={{ marginTop: 4, color: colors.text }}><Text style={{ fontWeight: "700" }}>Prescription: </Text>{item.prescription || "-"}</Text>
+          </PCard>
         )}
-        ListEmptyComponent={<Text>No records available.</Text>}
+        ListEmptyComponent={<Text style={{ color: colors.textMuted, textAlign: "center", marginTop: 40 }}>No records available.</Text>}
       />
     </View>
   );

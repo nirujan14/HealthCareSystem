@@ -6,6 +6,7 @@ import BookAppointmentScreen from "./screens/BookAppointmentScreen";
 import RecordsScreen from "./screens/RecordsScreen";
 import ProfileScreen from "./screens/ProfileScreen";
 import HealthCardScreen from "./screens/HealthCardScreen";
+import colors from "../src/constants/colors";
 
 const Tab = createBottomTabNavigator();
 
@@ -21,3 +22,14 @@ export default function MainTabs() {
     </Tab.Navigator>
   );
 }
+
+<Tab.Navigator
+  screenOptions={{
+    headerShown: false,
+    tabBarActiveTintColor: colors.primary,
+    tabBarInactiveTintColor: colors.textMuted,
+    tabBarStyle: { backgroundColor: colors.card, borderTopWidth: 0, elevation: 8 },
+  }}
+>
+
+</Tab.Navigator>
