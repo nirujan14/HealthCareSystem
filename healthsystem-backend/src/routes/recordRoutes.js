@@ -2,16 +2,16 @@ import { Router } from "express";
 import { auth } from "../middleware/auth.js";
 import { 
   listRecords,
-  getPatientRecords,  // Add this import
+  getPatientRecords,
   getRecordById 
 } from "../controllers/recordController.js";
 
 const router = Router();
 
-// Get all records (for staff/admin)
+// Get records - works for both patients (own records) and staff
 router.get("/", auth, listRecords);
 
-// Get records for specific patient (for patients and staff)
+// Get records for specific patient
 router.get("/patient/:patientId", auth, getPatientRecords);
 
 // Get single record by ID

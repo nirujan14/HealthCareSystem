@@ -2,6 +2,16 @@ import Appointment from "../models/Appointment.js";
 import Notification from "../models/AuditNotification.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 
+// Generate unique appointment number
+function generateAppointmentNumber() {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const random = Math.floor(Math.random() * 99999).toString().padStart(5, '0');
+  return `APT-${year}${month}${day}-${random}`;
+}
+
 export const listMine = asyncHandler(async (req, res) => {
   const { status, upcoming } = req.query;
   let query = { patient: req.user.id };
@@ -12,7 +22,12 @@ export const listMine = asyncHandler(async (req, res) => {
     query.status = "BOOKED";
   }
   
-  const items = await Appointment.find(query).sort({ date: 1 });
+  const items = await Appointment.find(query)
+    .populate("hospital", "name")
+    .populate("department", "name")
+    .populate("doctor", "fullName specialization")
+    .sort({ date: 1 });
+  
   res.json(items);
 });
 
@@ -20,67 +35,28 @@ export const getById = asyncHandler(async (req, res) => {
   const appt = await Appointment.findOne({ 
     _id: req.params.id, 
     patient: req.user.id 
-  });
+  })
+  .populate("hospital", "name")
+  .populate("department", "name")
+  .populate("doctor", "fullName specialization");
+  
   if (!appt) return res.status(404).json({ error: "Appointment not found" });
   res.json(appt);
 });
 
-// Get available time slots for a specific doctor/department
-export const getAvailableSlots = asyncHandler(async (req, res) => {
-  const { hospital, department, date } = req.query;
-  
-  if (!hospital || !department || !date) {
-    return res.status(400).json({ error: "hospital, department, and date required" });
-  }
-
-  const selectedDate = new Date(date);
-  const startOfDay = new Date(selectedDate);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(selectedDate);
-  endOfDay.setHours(23, 59, 59, 999);
-
-  // Find booked appointments for that day
-  const bookedAppointments = await Appointment.find({
-    hospital,
-    department,
-    date: { $gte: startOfDay, $lte: endOfDay },
-    status: "BOOKED"
-  });
-
-  // Generate time slots (9 AM - 5 PM, 30-minute intervals)
-  const slots = [];
-  const bookedTimes = bookedAppointments.map(a => a.date.toISOString());
-  
-  for (let hour = 9; hour < 17; hour++) {
-    for (let minute of [0, 30]) {
-      const slotDate = new Date(selectedDate);
-      slotDate.setHours(hour, minute, 0, 0);
-      
-      const isBooked = bookedTimes.includes(slotDate.toISOString());
-      const isPast = slotDate < new Date();
-      
-      slots.push({
-        time: slotDate.toISOString(),
-        available: !isBooked && !isPast,
-        displayTime: `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`
-      });
-    }
-  }
-
-  res.json({ slots });
-});
-
 export const create = asyncHandler(async (req, res) => {
-  const { hospital, department, doctor, date, notes, bookingMethod } = req.body;
+  const { hospital, department, doctor, date, notes } = req.body;
+  
   if (!hospital || !department || !date) {
     return res.status(400).json({ error: "hospital, department, date required" });
   }
 
-  // Check if slot is already booked
+  // Check if slot is already booked (optional - can be simplified)
+  const appointmentDate = new Date(date);
   const existingAppointment = await Appointment.findOne({
     hospital,
     department,
-    date: new Date(date),
+    date: appointmentDate,
     status: "BOOKED"
   });
 
@@ -88,27 +64,55 @@ export const create = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "Time slot already booked" });
   }
 
+  // Create appointment with generated number
   const appt = await Appointment.create({
+    appointmentNumber: generateAppointmentNumber(),
     patient: req.user.id,
     hospital,
     department,
     doctor,
-    date: new Date(date),
+    date: appointmentDate,
+    reason: notes || "General consultation",
     notes,
-    bookingMethod: bookingMethod || "online"
+    createdBy: {
+      userId: req.user.id,
+      userType: "PATIENT"
+    }
   });
+
+  // Populate references for response
+  await appt.populate([
+    { path: "hospital", select: "name" },
+    { path: "department", select: "name" },
+    { path: "doctor", select: "fullName specialization" }
+  ]);
 
   // Create notification
   await Notification.create({
-    patient: req.user.id,
-    type: "APPOINTMENT",
+    recipient: {
+      userId: req.user.id,
+      userType: "PATIENT"
+    },
+    type: "APPOINTMENT_CONFIRMED",
+    priority: "MEDIUM",
     title: "Appointment Booked",
-    message: `Your appointment at ${hospital} - ${department} on ${new Date(date).toLocaleString()} has been confirmed.`,
-    relatedId: appt._id
+    message: `Your appointment at ${appt.hospital.name} - ${appt.department.name} on ${new Date(date).toLocaleString()} has been confirmed.`,
+    relatedResource: {
+      resourceType: "APPOINTMENT",
+      resourceId: appt._id
+    },
+    channels: {
+      inApp: { sent: true, sentAt: new Date() }
+    },
+    sentBy: {
+      system: true
+    }
   });
 
-  // Send real-time update
-  req.io.to(req.user.id.toString()).emit("appointment:created", appt);
+  // Send real-time update if socket is available
+  if (req.io) {
+    req.io.to(req.user.id.toString()).emit("appointment:created", appt);
+  }
   
   res.status(201).json(appt);
 });
@@ -117,28 +121,51 @@ export const cancel = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { reason } = req.body;
   
-  const appt = await Appointment.findOne({ _id: id, patient: req.user.id });
+  const appt = await Appointment.findOne({ _id: id, patient: req.user.id })
+    .populate("hospital", "name")
+    .populate("department", "name");
+  
   if (!appt) return res.status(404).json({ error: "Appointment not found" });
   
-  if (appt.status !== "BOOKED") {
+  if (appt.status !== "BOOKED" && appt.status !== "CONFIRMED") {
     return res.status(400).json({ error: "Cannot cancel this appointment" });
   }
 
   appt.status = "CANCELLED";
-  appt.cancellationReason = reason;
+  appt.cancellationReason = reason || "Cancelled by patient";
+  appt.cancelledBy = {
+    userId: req.user.id,
+    userType: "PATIENT"
+  };
   appt.cancelledAt = new Date();
   await appt.save();
 
   // Create notification
   await Notification.create({
-    patient: req.user.id,
-    type: "APPOINTMENT",
+    recipient: {
+      userId: req.user.id,
+      userType: "PATIENT"
+    },
+    type: "APPOINTMENT_CANCELLED",
+    priority: "MEDIUM",
     title: "Appointment Cancelled",
-    message: `Your appointment at ${appt.hospital} on ${appt.date.toLocaleString()} has been cancelled.`,
-    relatedId: appt._id
+    message: `Your appointment at ${appt.hospital.name} on ${appt.date.toLocaleString()} has been cancelled.`,
+    relatedResource: {
+      resourceType: "APPOINTMENT",
+      resourceId: appt._id
+    },
+    channels: {
+      inApp: { sent: true, sentAt: new Date() }
+    },
+    sentBy: {
+      system: true
+    }
   });
 
-  req.io.to(req.user.id.toString()).emit("appointment:updated", appt);
+  if (req.io) {
+    req.io.to(req.user.id.toString()).emit("appointment:updated", appt);
+  }
+  
   res.json(appt);
 });
 
@@ -150,19 +177,21 @@ export const reschedule = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "New date is required" });
   }
 
-  const appt = await Appointment.findOne({ _id: id, patient: req.user.id });
+  const appt = await Appointment.findOne({ _id: id, patient: req.user.id })
+    .populate("hospital", "name");
+  
   if (!appt) return res.status(404).json({ error: "Appointment not found" });
 
-  if (appt.status !== "BOOKED") {
+  if (appt.status !== "BOOKED" && appt.status !== "CONFIRMED") {
     return res.status(400).json({ error: "Cannot reschedule this appointment" });
   }
 
   // Check if new slot is available
   const conflicting = await Appointment.findOne({
-    hospital: appt.hospital,
+    hospital: appt.hospital._id,
     department: appt.department,
     date: new Date(newDate),
-    status: "BOOKED",
+    status: { $in: ["BOOKED", "CONFIRMED"] },
     _id: { $ne: id }
   });
 
@@ -172,17 +201,34 @@ export const reschedule = asyncHandler(async (req, res) => {
 
   const oldDate = appt.date;
   appt.date = new Date(newDate);
+  appt.status = "BOOKED"; // Reset to BOOKED after rescheduling
   await appt.save();
 
   // Create notification
   await Notification.create({
-    patient: req.user.id,
-    type: "APPOINTMENT",
+    recipient: {
+      userId: req.user.id,
+      userType: "PATIENT"
+    },
+    type: "APPOINTMENT_RESCHEDULED",
+    priority: "HIGH",
     title: "Appointment Rescheduled",
     message: `Your appointment has been rescheduled from ${oldDate.toLocaleString()} to ${new Date(newDate).toLocaleString()}.`,
-    relatedId: appt._id
+    relatedResource: {
+      resourceType: "APPOINTMENT",
+      resourceId: appt._id
+    },
+    channels: {
+      inApp: { sent: true, sentAt: new Date() }
+    },
+    sentBy: {
+      system: true
+    }
   });
 
-  req.io.to(req.user.id.toString()).emit("appointment:updated", appt);
+  if (req.io) {
+    req.io.to(req.user.id.toString()).emit("appointment:updated", appt);
+  }
+  
   res.json(appt);
 });
