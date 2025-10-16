@@ -1,8 +1,9 @@
-// Enhanced Medical Record Controller
+// Enhanced Medical Record Controller - Complete Implementation
 // Path: src/controllers/recordController.js
 
 import { Record, Appointment, Patient, Notification, AuditLog } from "../models/index.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
+import cloudinary from "../config/cloudinary.js";
 
 /**
  * Generate unique record number
@@ -32,6 +33,7 @@ export const createRecord = asyncHandler(async (req, res) => {
     clinicalNotes,
     treatmentPlan,
     prescriptions,
+    labTests,
     followUp
   } = req.body;
 
@@ -56,7 +58,6 @@ export const createRecord = asyncHandler(async (req, res) => {
       return res.status(404).json({ error: "Appointment not found" });
     }
     
-    // Verify appointment belongs to the patient
     if (appointment.patient.toString() !== patientId) {
       return res.status(400).json({ error: "Appointment does not belong to patient" });
     }
@@ -79,15 +80,16 @@ export const createRecord = asyncHandler(async (req, res) => {
       primary: {
         condition: diagnosis.primary.condition,
         icdCode: diagnosis.primary.icdCode,
-        severity: diagnosis.primary.severity
+        severity: diagnosis.primary.severity || "MODERATE"
       },
       secondary: diagnosis.secondary || []
     },
     clinicalNotes,
     treatmentPlan,
     prescriptions: prescriptions || [],
+    labTests: labTests || [],
     followUp: followUp || { required: false },
-    status: "FINALIZED",
+    status: "DRAFT",
     createdBy: req.user.id
   });
 
@@ -101,43 +103,9 @@ export const createRecord = asyncHandler(async (req, res) => {
   // Update appointment status if linked
   if (appointmentId) {
     await Appointment.findByIdAndUpdate(appointmentId, {
-      status: "COMPLETED",
-      consultationEndTime: new Date()
+      status: "IN_PROGRESS"
     });
   }
-
-  // Update patient last visit
-  await Patient.findByIdAndUpdate(patientId, {
-    lastVisit: {
-      date: new Date(),
-      hospital: req.user.hospitalId,
-      department: req.user.departmentId
-    }
-  });
-
-  // Create notification for patient
-  await Notification.create({
-    recipient: {
-      userId: patientId,
-      userType: "PATIENT"
-    },
-    type: "RECORD_UPDATED",
-    priority: "MEDIUM",
-    title: "Medical Record Created",
-    message: `Your medical record from ${new Date().toLocaleDateString()} has been created by Dr. ${req.user.fullName}.`,
-    relatedResource: {
-      resourceType: "RECORD",
-      resourceId: record._id
-    },
-    channels: {
-      inApp: { sent: true, sentAt: new Date() }
-    },
-    sentBy: {
-      userId: req.user.id,
-      userType: "STAFF",
-      system: false
-    }
-  });
 
   // Log audit
   await AuditLog.create({
@@ -161,13 +129,6 @@ export const createRecord = asyncHandler(async (req, res) => {
     status: "SUCCESS"
   });
 
-  // Send real-time notification
-  req.io.to(patientId.toString()).emit("record:created", {
-    recordId: record._id,
-    recordNumber: record.recordNumber,
-    visitDate: record.visitDate
-  });
-
   res.status(201).json({
     message: "Medical record created successfully",
     record
@@ -177,7 +138,7 @@ export const createRecord = asyncHandler(async (req, res) => {
 /**
  * Update medical record
  * PATCH /records/:id
- * @access Private (Doctor who created it)
+ * @access Private (Doctor who created it or same department)
  */
 export const updateRecord = asyncHandler(async (req, res) => {
   const record = await Record.findById(req.params.id);
@@ -204,6 +165,9 @@ export const updateRecord = asyncHandler(async (req, res) => {
     "clinicalNotes",
     "treatmentPlan",
     "prescriptions",
+    "labTests",
+    "imagingStudies",
+    "procedures",
     "followUp",
     "status"
   ];
@@ -227,6 +191,46 @@ export const updateRecord = asyncHandler(async (req, res) => {
     { path: "hospital", select: "name" },
     { path: "department", select: "name" }
   ]);
+
+  // If finalized, update appointment and notify patient
+  if (updates.status === "FINALIZED") {
+    if (record.appointment) {
+      await Appointment.findByIdAndUpdate(record.appointment, {
+        status: "COMPLETED",
+        consultationEndTime: new Date()
+      });
+    }
+
+    // Notify patient
+    await Notification.create({
+      recipient: {
+        userId: record.patient,
+        userType: "PATIENT"
+      },
+      type: "RECORD_UPDATED",
+      priority: "MEDIUM",
+      title: "Medical Record Finalized",
+      message: `Your medical record from ${new Date(record.visitDate).toLocaleDateString()} has been finalized by Dr. ${req.user.fullName}.`,
+      relatedResource: {
+        resourceType: "RECORD",
+        resourceId: record._id
+      },
+      channels: {
+        inApp: { sent: true, sentAt: new Date() }
+      },
+      sentBy: {
+        userId: req.user.id,
+        userType: "STAFF"
+      }
+    });
+
+    // Send real-time notification
+    req.io.to(record.patient.toString()).emit("record:finalized", {
+      recordId: record._id,
+      recordNumber: record.recordNumber,
+      visitDate: record.visitDate
+    });
+  }
 
   // Log audit
   await AuditLog.create({
@@ -334,12 +338,235 @@ export const getRecordById = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Upload document to medical record
+ * POST /records/:id/documents
+ * @access Private (Doctor, Nurse)
+ */
+export const uploadDocument = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No file provided" });
+  }
+
+  const { type, description } = req.body;
+
+  const record = await Record.findById(req.params.id);
+  if (!record) {
+    return res.status(404).json({ error: "Record not found" });
+  }
+
+  // Verify staff can upload to this record
+  if (record.hospital.toString() !== req.user.hospitalId.toString()) {
+    return res.status(403).json({ error: "Cannot upload to record from another hospital" });
+  }
+
+  // Determine resource type based on file
+  let resourceType = "application";
+  if (req.file.mimetype.startsWith("image")) {
+    resourceType = "image";
+  } else if (req.file.mimetype === "application/pdf") {
+    resourceType = "raw";
+  }
+
+  // Upload to Cloudinary
+  const fileStr = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+  const uploadResult = await cloudinary.uploader.upload(fileStr, {
+    folder: `healthsystem/records/${record.recordNumber}`,
+    resource_type: resourceType,
+    format: req.file.mimetype === "application/pdf" ? "pdf" : undefined
+  });
+
+  // Add to record attachments
+  const attachment = {
+    name: req.file.originalname,
+    type: type || "OTHER",
+    url: uploadResult.secure_url,
+    publicId: uploadResult.public_id,
+    uploadedBy: req.user.id,
+    uploadedAt: new Date(),
+    description: description || ""
+  };
+
+  record.attachments.push(attachment);
+  await record.save();
+
+  await record.populate("attachments.uploadedBy", "fullName role");
+
+  // Log audit
+  await AuditLog.create({
+    user: {
+      userId: req.user.id,
+      userType: "STAFF",
+      userName: req.user.fullName,
+      userEmail: req.user.email
+    },
+    action: "CREATE",
+    resource: "RECORD",
+    resourceId: record._id,
+    details: {
+      action: "document_upload",
+      recordNumber: record.recordNumber,
+      documentType: type,
+      fileName: req.file.originalname
+    },
+    ipAddress: req.ip,
+    userAgent: req.headers["user-agent"],
+    hospital: req.user.hospitalId,
+    status: "SUCCESS"
+  });
+
+  // Notify patient
+  await Notification.create({
+    recipient: {
+      userId: record.patient,
+      userType: "PATIENT"
+    },
+    type: "RECORD_UPDATED",
+    priority: "MEDIUM",
+    title: "New Document Added",
+    message: `A new ${type || 'document'} has been added to your medical record.`,
+    relatedResource: {
+      resourceType: "RECORD",
+      resourceId: record._id
+    },
+    channels: {
+      inApp: { sent: true, sentAt: new Date() }
+    },
+    sentBy: {
+      userId: req.user.id,
+      userType: "STAFF"
+    }
+  });
+
+  res.status(201).json({
+    message: "Document uploaded successfully",
+    attachment: record.attachments[record.attachments.length - 1]
+  });
+});
+
+/**
+ * Delete document from medical record
+ * DELETE /records/:id/documents/:attachmentId
+ * @access Private (Doctor who created record)
+ */
+export const deleteDocument = asyncHandler(async (req, res) => {
+  const { id, attachmentId } = req.params;
+
+  const record = await Record.findById(id);
+  if (!record) {
+    return res.status(404).json({ error: "Record not found" });
+  }
+
+  const attachment = record.attachments.id(attachmentId);
+  if (!attachment) {
+    return res.status(404).json({ error: "Document not found" });
+  }
+
+  // Only creator or admin can delete
+  if (record.createdBy.toString() !== req.user.id && req.user.role !== "ADMIN") {
+    return res.status(403).json({ error: "Only record creator or admin can delete documents" });
+  }
+
+  // Delete from Cloudinary
+  if (attachment.publicId) {
+    await cloudinary.uploader.destroy(attachment.publicId);
+  }
+
+  // Remove from record
+  attachment.remove();
+  await record.save();
+
+  // Log audit
+  await AuditLog.create({
+    user: {
+      userId: req.user.id,
+      userType: "STAFF",
+      userName: req.user.fullName,
+      userEmail: req.user.email
+    },
+    action: "DELETE",
+    resource: "RECORD",
+    resourceId: record._id,
+    details: {
+      action: "document_delete",
+      recordNumber: record.recordNumber,
+      fileName: attachment.name
+    },
+    ipAddress: req.ip,
+    userAgent: req.headers["user-agent"],
+    hospital: req.user.hospitalId,
+    status: "SUCCESS"
+  });
+
+  res.json({ message: "Document deleted successfully" });
+});
+
+/**
+ * Get treatment history timeline for patient
+ * GET /records/patient/:patientId/timeline
+ * @access Private (Staff & Patient - own records)
+ */
+export const getTreatmentTimeline = asyncHandler(async (req, res) => {
+  const { patientId } = req.params;
+  const { startDate, endDate, department, diagnosis } = req.query;
+
+  // Patients can only view their own timeline
+  if (req.user.userType === "PATIENT" && req.user.id !== patientId) {
+    return res.status(403).json({ error: "Access denied" });
+  }
+
+  const query = { patient: patientId, status: "FINALIZED" };
+
+  // Date range filter
+  if (startDate || endDate) {
+    query.visitDate = {};
+    if (startDate) query.visitDate.$gte = new Date(startDate);
+    if (endDate) query.visitDate.$lte = new Date(endDate);
+  }
+
+  // Department filter
+  if (department) query.department = department;
+
+  // Diagnosis filter
+  if (diagnosis) {
+    query["diagnosis.primary.condition"] = { $regex: diagnosis, $options: "i" };
+  }
+
+  const records = await Record.find(query)
+    .populate("attendingDoctor", "fullName specialization")
+    .populate("hospital", "name")
+    .populate("department", "name")
+    .select("recordNumber visitDate diagnosis prescriptions labTests procedures followUp")
+    .sort({ visitDate: -1 });
+
+  // Build timeline with key events
+  const timeline = records.map(record => ({
+    recordId: record._id,
+    recordNumber: record.recordNumber,
+    date: record.visitDate,
+    hospital: record.hospital.name,
+    department: record.department.name,
+    doctor: record.attendingDoctor.fullName,
+    diagnosis: record.diagnosis.primary.condition,
+    prescriptions: record.prescriptions.length,
+    labTests: record.labTests.length,
+    procedures: record.procedures.length,
+    hasFollowUp: record.followUp?.required || false
+  }));
+
+  res.json({
+    patient: patientId,
+    totalRecords: timeline.length,
+    timeline
+  });
+});
+
+/**
  * Add prescription to record
- * POST /records/:id/prescription
+ * POST /records/:id/prescriptions
  * @access Private (Doctor only)
  */
 export const addPrescription = asyncHandler(async (req, res) => {
-  const { medicationName, dosage, frequency, duration, instructions } = req.body;
+  const { medicationName, dosage, frequency, duration, instructions, startDate } = req.body;
 
   if (!medicationName || !dosage || !frequency) {
     return res.status(400).json({ 
@@ -348,7 +575,6 @@ export const addPrescription = asyncHandler(async (req, res) => {
   }
 
   const record = await Record.findById(req.params.id);
-
   if (!record) {
     return res.status(404).json({ error: "Record not found" });
   }
@@ -359,16 +585,17 @@ export const addPrescription = asyncHandler(async (req, res) => {
   }
 
   // Add prescription
-  record.prescriptions.push({
+  const prescription = {
     medicationName,
     dosage,
     frequency,
     duration,
     instructions,
-    startDate: new Date(),
+    startDate: startDate || new Date(),
     isActive: true
-  });
+  };
 
+  record.prescriptions.push(prescription);
   await record.save();
 
   // Notify patient
@@ -394,6 +621,27 @@ export const addPrescription = asyncHandler(async (req, res) => {
     }
   });
 
+  // Log audit
+  await AuditLog.create({
+    user: {
+      userId: req.user.id,
+      userType: "STAFF",
+      userName: req.user.fullName,
+      userEmail: req.user.email
+    },
+    action: "CREATE",
+    resource: "PRESCRIPTION",
+    resourceId: record._id,
+    details: {
+      recordNumber: record.recordNumber,
+      medication: medicationName
+    },
+    ipAddress: req.ip,
+    userAgent: req.headers["user-agent"],
+    hospital: req.user.hospitalId,
+    status: "SUCCESS"
+  });
+
   res.json({
     message: "Prescription added successfully",
     prescription: record.prescriptions[record.prescriptions.length - 1]
@@ -401,39 +649,278 @@ export const addPrescription = asyncHandler(async (req, res) => {
 });
 
 /**
- * Get records by hospital/department
- * GET /records?hospital=xxx&department=xxx&date=2025-10-20
- * @access Private (Staff only)
+ * Update prescription status
+ * PATCH /records/:id/prescriptions/:prescriptionId
+ * @access Private (Doctor)
  */
-export const listRecords = asyncHandler(async (req, res) => {
-  const { hospital, department, date, status, page = 1, limit = 20 } = req.query;
+export const updatePrescription = asyncHandler(async (req, res) => {
+  const { id, prescriptionId } = req.params;
+  const { isActive, endDate } = req.body;
 
-  const query = {};
-  
-  // Staff can only see records from their hospital
-  if (req.user.userType === "STAFF") {
-    query.hospital = req.user.hospitalId;
-  } else if (hospital) {
-    query.hospital = hospital;
+  const record = await Record.findById(id);
+  if (!record) {
+    return res.status(404).json({ error: "Record not found" });
+  }
+
+  const prescription = record.prescriptions.id(prescriptionId);
+  if (!prescription) {
+    return res.status(404).json({ error: "Prescription not found" });
+  }
+
+  if (isActive !== undefined) prescription.isActive = isActive;
+  if (endDate) prescription.endDate = new Date(endDate);
+
+  await record.save();
+
+  res.json({
+    message: "Prescription updated successfully",
+    prescription
+  });
+});
+
+/**
+ * Get active prescriptions for patient
+ * GET /records/patient/:patientId/prescriptions/active
+ * @access Private (Staff & Patient - own records)
+ */
+export const getActivePrescriptions = asyncHandler(async (req, res) => {
+  const { patientId } = req.params;
+
+  // Patients can only view their own prescriptions
+  if (req.user.userType === "PATIENT" && req.user.id !== patientId) {
+    return res.status(403).json({ error: "Access denied" });
+  }
+
+  const records = await Record.find({ 
+    patient: patientId,
+    "prescriptions.isActive": true 
+  })
+  .populate("attendingDoctor", "fullName specialization")
+  .populate("hospital", "name")
+  .select("recordNumber visitDate prescriptions");
+
+  // Extract active prescriptions
+  const activePrescriptions = [];
+  records.forEach(record => {
+    record.prescriptions.forEach(prescription => {
+      if (prescription.isActive) {
+        activePrescriptions.push({
+          recordNumber: record.recordNumber,
+          visitDate: record.visitDate,
+          doctor: record.attendingDoctor.fullName,
+          hospital: record.hospital.name,
+          ...prescription.toObject()
+        });
+      }
+    });
+  });
+
+  res.json({
+    patient: patientId,
+    totalActive: activePrescriptions.length,
+    prescriptions: activePrescriptions
+  });
+});
+
+/**
+ * Add lab test to record
+ * POST /records/:id/lab-tests
+ * @access Private (Doctor, Lab Technician)
+ */
+export const addLabTest = asyncHandler(async (req, res) => {
+  const { testName, orderedDate, instructions } = req.body;
+
+  if (!testName) {
+    return res.status(400).json({ error: "Test name is required" });
+  }
+
+  const record = await Record.findById(req.params.id);
+  if (!record) {
+    return res.status(404).json({ error: "Record not found" });
+  }
+
+  const labTest = {
+    testName,
+    orderedDate: orderedDate || new Date(),
+    status: "ORDERED"
+  };
+
+  record.labTests.push(labTest);
+  await record.save();
+
+  // Notify patient
+  await Notification.create({
+    recipient: {
+      userId: record.patient,
+      userType: "PATIENT"
+    },
+    type: "LAB_RESULT_READY",
+    priority: "MEDIUM",
+    title: "Lab Test Ordered",
+    message: `A lab test (${testName}) has been ordered for you.`,
+    relatedResource: {
+      resourceType: "RECORD",
+      resourceId: record._id
+    },
+    channels: {
+      inApp: { sent: true, sentAt: new Date() }
+    },
+    sentBy: {
+      userId: req.user.id,
+      userType: "STAFF"
+    }
+  });
+
+  res.status(201).json({
+    message: "Lab test added successfully",
+    labTest: record.labTests[record.labTests.length - 1]
+  });
+});
+
+/**
+ * Update lab test result
+ * PATCH /records/:id/lab-tests/:testId
+ * @access Private (Lab Technician, Doctor)
+ */
+export const updateLabTest = asyncHandler(async (req, res) => {
+  const { id, testId } = req.params;
+  const { result, resultDate, normalRange, status, attachmentUrl } = req.body;
+
+  const record = await Record.findById(id);
+  if (!record) {
+    return res.status(404).json({ error: "Record not found" });
+  }
+
+  const labTest = record.labTests.id(testId);
+  if (!labTest) {
+    return res.status(404).json({ error: "Lab test not found" });
+  }
+
+  if (result) labTest.result = result;
+  if (resultDate) labTest.resultDate = new Date(resultDate);
+  if (normalRange) labTest.normalRange = normalRange;
+  if (status) labTest.status = status;
+  if (attachmentUrl) labTest.attachmentUrl = attachmentUrl;
+
+  await record.save();
+
+  // Notify patient if result is ready
+  if (status === "COMPLETED") {
+    await Notification.create({
+      recipient: {
+        userId: record.patient,
+        userType: "PATIENT"
+      },
+      type: "LAB_RESULT_READY",
+      priority: "HIGH",
+      title: "Lab Results Ready",
+      message: `Your ${labTest.testName} results are now available.`,
+      relatedResource: {
+        resourceType: "RECORD",
+        resourceId: record._id
+      },
+      channels: {
+        inApp: { sent: true, sentAt: new Date() }
+      },
+      sentBy: {
+        userId: req.user.id,
+        userType: "STAFF"
+      }
+    });
+  }
+
+  res.json({
+    message: "Lab test updated successfully",
+    labTest
+  });
+});
+
+/**
+ * Get doctor's active patients
+ * GET /records/doctor/active-patients
+ * @access Private (Doctor only)
+ */
+export const getDoctorActivePatients = asyncHandler(async (req, res) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  // Get today's appointments for this doctor
+  const appointments = await Appointment.find({
+    doctor: req.user.id,
+    date: { $gte: today, $lt: tomorrow },
+    status: { $in: ["BOOKED", "CONFIRMED", "CHECKED_IN", "IN_PROGRESS"] }
+  })
+  .populate("patient", "fullName healthCardId age gender bloodGroup phone")
+  .populate("department", "name")
+  .sort({ date: 1 });
+
+  // Get records that need finalization
+  const pendingRecords = await Record.find({
+    attendingDoctor: req.user.id,
+    status: "DRAFT",
+    visitDate: { $gte: today, $lt: tomorrow }
+  })
+  .populate("patient", "fullName healthCardId")
+  .select("recordNumber patient chiefComplaint visitDate");
+
+  res.json({
+    date: today,
+    appointments: appointments.length,
+    pendingRecords: pendingRecords.length,
+    patients: appointments,
+    recordsToFinalize: pendingRecords
+  });
+});
+
+/**
+ * Search medical records
+ * GET /records/search
+ * @access Private (Staff)
+ */
+export const searchRecords = asyncHandler(async (req, res) => {
+  const { 
+    q, 
+    patientName, 
+    diagnosis, 
+    startDate, 
+    endDate,
+    department,
+    doctor,
+    page = 1,
+    limit = 20
+  } = req.query;
+
+  const query = { hospital: req.user.hospitalId };
+
+  if (q) {
+    query.$or = [
+      { recordNumber: { $regex: q, $options: "i" } },
+      { chiefComplaint: { $regex: q, $options: "i" } },
+      { "diagnosis.primary.condition": { $regex: q, $options: "i" } }
+    ];
+  }
+
+  if (diagnosis) {
+    query["diagnosis.primary.condition"] = { $regex: diagnosis, $options: "i" };
+  }
+
+  if (startDate || endDate) {
+    query.visitDate = {};
+    if (startDate) query.visitDate.$gte = new Date(startDate);
+    if (endDate) query.visitDate.$lte = new Date(endDate);
   }
 
   if (department) query.department = department;
-  if (status) query.status = status;
-  
-  if (date) {
-    const startDate = new Date(date);
-    startDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(date);
-    endDate.setHours(23, 59, 59, 999);
-    query.visitDate = { $gte: startDate, $lte: endDate };
-  }
+  if (doctor) query.attendingDoctor = doctor;
 
   const skip = (page - 1) * limit;
 
   const [records, total] = await Promise.all([
     Record.find(query)
       .populate("patient", "fullName healthCardId")
-      .populate("attendingDoctor", "fullName")
+      .populate("attendingDoctor", "fullName specialization")
       .populate("department", "name")
       .select("recordNumber visitDate diagnosis status")
       .sort({ visitDate: -1 })
@@ -453,5 +940,4 @@ export const listRecords = asyncHandler(async (req, res) => {
   });
 });
 
-// For backward compatibility with patient app
 export { getPatientRecords as listRecords };
