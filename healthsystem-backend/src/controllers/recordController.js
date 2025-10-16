@@ -267,8 +267,8 @@ export const updateRecord = asyncHandler(async (req, res) => {
 export const getPatientRecords = asyncHandler(async (req, res) => {
   const { patientId } = req.params;
 
-  // Patients can only view their own records
-  if (req.user.userType === "PATIENT" && req.user.id !== patientId) {
+  // Patients can only view their own records - FIXED COMPARISON
+  if (req.user.userType === "PATIENT" && req.user.id.toString() !== patientId) {
     return res.status(403).json({ error: "Access denied" });
   }
 
@@ -277,28 +277,6 @@ export const getPatientRecords = asyncHandler(async (req, res) => {
     .populate("hospital", "name hospitalId")
     .populate("department", "name")
     .sort({ visitDate: -1 });
-
-  // Log access for audit
-  await AuditLog.create({
-    user: {
-      userId: req.user.id,
-      userType: req.user.userType,
-      userName: req.user.fullName,
-      userEmail: req.user.email
-    },
-    action: "READ",
-    resource: "RECORD",
-    resourceId: null,
-    details: {
-      action: "view_patient_records",
-      patientId,
-      recordCount: records.length
-    },
-    ipAddress: req.ip,
-    userAgent: req.headers["user-agent"],
-    hospital: req.user.hospitalId,
-    status: "SUCCESS"
-  });
 
   res.json(records);
 });

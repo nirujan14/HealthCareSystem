@@ -24,37 +24,33 @@ export const login = asyncHandler(async (req, res) => {
 
   let user, role;
 
-  // Find user based on type
+  // Find user based on type without triggering full validation
   if (userType === "PATIENT") {
-    user = await Patient.findOne({ email: email.toLowerCase() });
-    
+    user = await Patient.findOne({ email: email.toLowerCase() }).select("+passwordHash");
     if (!user || !user.isActive) {
       await logAuditAction(null, "LOGIN", "PATIENT", email, "FAILED", req);
       return res.status(401).json({ error: "Invalid credentials" });
     }
-
     role = "PATIENT";
   } else {
     user = await Staff.findOne({ email: email.toLowerCase() })
+      .select("+passwordHash")
       .populate("hospital department");
-    
     if (!user || !user.isActive) {
       await logAuditAction(null, "LOGIN", "STAFF", email, "FAILED", req);
       return res.status(401).json({ error: "Invalid credentials" });
     }
-
     role = user.role;
   }
 
   // Verify password
   const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
-  
   if (!isPasswordValid) {
     await logAuditAction(user._id, "LOGIN", userType, email, "FAILED", req);
     return res.status(401).json({ error: "Invalid credentials" });
   }
 
-  // Generate JWT token
+  // Generate JWT token without modifying the user document
   const token = jwt.sign(
     { 
       id: user._id,
@@ -66,14 +62,10 @@ export const login = asyncHandler(async (req, res) => {
     { expiresIn: "7d" }
   );
 
-  // Update last login
-  user.lastLogin = new Date();
-  await user.save();
-
-  // Log successful login
+  // Log successful login without saving
   await logAuditAction(user._id, "LOGIN", userType, null, "SUCCESS", req);
 
-  // Prepare response based on user type
+  // Prepare response
   const response = {
     token,
     userType,
@@ -85,7 +77,6 @@ export const login = asyncHandler(async (req, res) => {
     }
   };
 
-  // Add type-specific fields
   if (userType === "PATIENT") {
     response.user.healthCardId = user.healthCardId;
     response.user.phone = user.phone;
@@ -93,16 +84,16 @@ export const login = asyncHandler(async (req, res) => {
     response.user.staffId = user.staffId;
     response.user.role = user.role;
     response.user.specialization = user.specialization;
-    response.user.hospital = {
+    response.user.hospital = user.hospital ? {
       id: user.hospital._id,
       name: user.hospital.name,
       type: user.hospital.type
-    };
-    response.user.department = {
+    } : null;
+    response.user.department = user.department ? {
       id: user.department._id,
       name: user.department.name,
       category: user.department.category
-    };
+    } : null;
   }
 
   res.json(response);

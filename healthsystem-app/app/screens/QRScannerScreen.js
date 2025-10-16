@@ -121,10 +121,10 @@ export default function QRScannerScreen() {
         >
           <View style={styles.overlay}>
             <View style={styles.scanArea}>
-              <View style={styles.corner} style={styles.topLeft} />
-              <View style={styles.corner} style={styles.topRight} />
-              <View style={styles.corner} style={styles.bottomLeft} />
-              <View style={styles.corner} style={styles.bottomRight} />
+              <View style={[styles.corner, styles.topLeft]} />
+              <View style={[styles.corner, styles.topRight]} />
+              <View style={[styles.corner, styles.bottomLeft]} />
+              <View style={[styles.corner, styles.bottomRight]} />
             </View>
             
             <View style={styles.instructionBox}>
