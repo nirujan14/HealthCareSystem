@@ -187,3 +187,8 @@ notificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7776000 });
 // Export models
 export const AuditLog = mongoose.model("AuditLog", auditLogSchema);
 export const Notification = mongoose.model("Notification", notificationSchema);
+
+
+export default { AuditLog, Notification };
+// Removed the erroneous default export (it referenced an undefined schema and mismatched model name).
+// If you need a default export or a Department model, define it properly in a separate file or add it here with its schema.
