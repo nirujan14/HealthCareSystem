@@ -1,5 +1,5 @@
 import Appointment from "../models/Appointment.js";
-import Notification from "../models/AuditNotification.js";
+import { Notification } from "../models/AuditNotification.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 
 // Generate unique appointment number
@@ -114,7 +114,6 @@ export const create = asyncHandler(async (req, res) => {
 
   // Create notification
   try {
-    const { Notification } = await import("../models/AuditNotification.js");
     await Notification.create({
       recipient: {
         userId: req.user.id,
@@ -152,57 +151,77 @@ export const cancel = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { reason } = req.body;
   
-  const appt = await Appointment.findOne({ _id: id, patient: req.user.id })
-    .populate("hospital", "name hospitalId")
-    .populate("department", "name code");
+  console.log("=== CANCEL REQUEST ===");
+  console.log("Appointment ID:", id);
+  console.log("User ID:", req.user.id);
+  console.log("Reason:", reason);
   
-  if (!appt) return res.status(404).json({ error: "Appointment not found" });
-  
-  if (appt.status !== "BOOKED" && appt.status !== "CONFIRMED") {
-    return res.status(400).json({ error: "Cannot cancel this appointment" });
-  }
-
-  appt.status = "CANCELLED";
-  appt.cancellationReason = reason || "Cancelled by patient";
-  appt.cancelledBy = {
-    userId: req.user.id,
-    userType: "PATIENT"
-  };
-  appt.cancelledAt = new Date();
-  await appt.save();
-
-  // Create notification
   try {
-    const { Notification } = await import("../models/AuditNotification.js");
-    await Notification.create({
-      recipient: {
-        userId: req.user.id,
-        userType: "PATIENT"
-      },
-      type: "APPOINTMENT_CANCELLED",
-      priority: "MEDIUM",
-      title: "Appointment Cancelled",
-      message: `Your appointment at ${appt.hospital.name} on ${appt.date.toLocaleString()} has been cancelled.`,
-      relatedResource: {
-        resourceType: "APPOINTMENT",
-        resourceId: appt._id
-      },
-      channels: {
-        inApp: { sent: true, sentAt: new Date() }
-      },
-      sentBy: {
-        system: true
-      }
+    // Find appointment
+    const appt = await Appointment.findOne({ 
+      _id: id, 
+      patient: req.user.id 
     });
-  } catch (notifError) {
-    console.error("Notification creation failed:", notifError);
-  }
+    
+    if (!appt) {
+      console.log("❌ Appointment not found");
+      return res.status(404).json({ error: "Appointment not found" });
+    }
+    
+    console.log("✅ Found appointment:", {
+      id: appt._id,
+      status: appt.status,
+      date: appt.date
+    });
+    
+    // Check if appointment can be cancelled
+    if (appt.status !== "BOOKED" && appt.status !== "CONFIRMED") {
+      console.log("❌ Cannot cancel - wrong status:", appt.status);
+      return res.status(400).json({ 
+        error: `Cannot cancel appointment with status: ${appt.status}` 
+      });
+    }
 
-  if (req.io) {
-    req.io.to(req.user.id.toString()).emit("appointment:updated", appt);
+    // Update appointment
+    appt.status = "CANCELLED";
+    appt.cancellationReason = reason || "Cancelled by patient";
+    appt.cancelledBy = {
+      userId: req.user.id,
+      userType: "PATIENT"
+    };
+    appt.cancelledAt = new Date();
+    
+    console.log("💾 Saving appointment...");
+    await appt.save();
+    console.log("✅ Appointment saved successfully");
+
+    // Populate for response
+    await appt.populate([
+      { path: "hospital", select: "name hospitalId" },
+      { path: "department", select: "name code" },
+      { path: "doctor", select: "fullName specialization" }
+    ]);
+
+    // Send real-time update (if socket is available)
+    try {
+      if (req.io) {
+        req.io.to(req.user.id.toString()).emit("appointment:updated", appt);
+        console.log("📡 Socket event sent");
+      }
+    } catch (socketError) {
+      console.error("Socket error (non-critical):", socketError.message);
+    }
+    
+    console.log("=== CANCEL SUCCESS ===");
+    res.json(appt);
+    
+  } catch (error) {
+    console.error("=== CANCEL ERROR ===");
+    console.error("Error type:", error.name);
+    console.error("Error message:", error.message);
+    console.error("Full error:", error);
+    throw error;
   }
-  
-  res.json(appt);
 });
 
 export const reschedule = asyncHandler(async (req, res) => {
@@ -254,7 +273,6 @@ export const reschedule = asyncHandler(async (req, res) => {
 
   // Create notification
   try {
-    const { Notification } = await import("../models/AuditNotification.js");
     await Notification.create({
       recipient: {
         userId: req.user.id,
