@@ -71,10 +71,10 @@ export default function AppointmentsScreen() {
     }
   };
 
-  const handleCancel = async (id, hospital) => {
+  const handleCancel = async (id, hospitalName) => {
     Alert.alert(
       "Cancel Appointment",
-      `Are you sure you want to cancel your appointment at ${hospital}?`,
+      `Are you sure you want to cancel your appointment at ${hospitalName}?`,
       [
         { text: "No", style: "cancel" },
         { 
@@ -119,6 +119,10 @@ export default function AppointmentsScreen() {
     const statusColor = getStatusColor(item.status);
     const statusText = getStatusText(item.status);
 
+    // Extract hospital and department names safely
+    const hospitalName = item.hospital?.name || item.hospital || "Unknown Hospital";
+    const departmentName = item.department?.name || item.department || "General";
+
     return (
       <PCard style={{ marginBottom: 16, padding: 16 }}>
         {/* Header */}
@@ -130,14 +134,14 @@ export default function AppointmentsScreen() {
               color: colors.text,
               marginBottom: 4 
             }}>
-              {item.hospital}
+              {hospitalName}
             </Text>
             <Text style={{ 
               fontSize: 14, 
               color: colors.textMuted,
               marginBottom: 8 
             }}>
-              {item.department}
+              {departmentName}
             </Text>
           </View>
           
@@ -197,17 +201,28 @@ export default function AppointmentsScreen() {
               marginRight: 12
             }}>
               <Text style={{ color: colors.white, fontWeight: '600', fontSize: 14 }}>
-                {item.doctor.name?.charAt(0) || 'D'}
+                {item.doctor.fullName?.charAt(0) || item.doctor.name?.charAt(0) || 'D'}
               </Text>
             </View>
             <View>
               <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>
-                Dr. {item.doctor.name}
+                Dr. {item.doctor.fullName || item.doctor.name || "Doctor"}
               </Text>
-              <Text style={{ fontSize: 12, color: colors.textMuted }}>
-                {item.doctor.specialization}
-              </Text>
+              {item.doctor.specialization && (
+                <Text style={{ fontSize: 12, color: colors.textMuted }}>
+                  {item.doctor.specialization}
+                </Text>
+              )}
             </View>
+          </View>
+        )}
+
+        {/* Appointment Number */}
+        {item.appointmentNumber && (
+          <View style={{ marginTop: 8 }}>
+            <Text style={{ fontSize: 12, color: colors.textMuted }}>
+              Appointment No: {item.appointmentNumber}
+            </Text>
           </View>
         )}
 
@@ -215,18 +230,22 @@ export default function AppointmentsScreen() {
         {item.status === "BOOKED" && (
           <View style={{ marginTop: 16, flexDirection: 'row', gap: 12 }}>
             <PButton 
-              title="Cancel Appointment" 
+              title="Cancel" 
               type="outline" 
-              onPress={() => handleCancel(item._id, item.hospital)} 
+              onPress={() => handleCancel(item._id, hospitalName)} 
               style={{ flex: 1 }}
               loading={cancellingId === item._id}
               disabled={cancellingId !== null}
+              textStyle={{ color: colors.danger }}
             />
             <PButton 
               title="Reschedule" 
               type="primary" 
-              onPress={() => {/* Add reschedule logic */}}
+              onPress={() => {
+                Alert.alert("Coming Soon", "Reschedule feature will be available soon");
+              }}
               style={{ flex: 1 }}
+              disabled={cancellingId !== null}
             />
           </View>
         )}
