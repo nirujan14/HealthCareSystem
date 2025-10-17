@@ -83,6 +83,10 @@ const patientSchema = new mongoose.Schema(
       unique: true,
       required: true 
     },
+    qrCode: {
+      type: String, // store QR as base64 string
+      required: false
+    },
     preferredLanguage: {
       type: String,
       enum: ["SINHALA", "TAMIL", "ENGLISH"],

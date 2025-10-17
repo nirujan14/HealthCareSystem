@@ -19,6 +19,12 @@ import recordRoutes from "./routes/recordRoutes.js";
 
 import { attachSocket } from "./socket.js";
 
+
+import receptionistAuthRoutes from "./routes/receptionist/receptionistAuthRoutes.js";
+import receptionistRoutes from "./routes/receptionist/receptionistRoutes.js";
+
+
+
 const app = express();
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
@@ -36,6 +42,9 @@ app.use((req, res, next) => {
   req.io = io;
   next();
 });
+
+
+
 
 // Request logging middleware (development only)
 if (process.env.NODE_ENV !== "production") {
@@ -72,6 +81,10 @@ app.use("/staff", staffRoutes);
 app.use("/appointments", appointmentRoutes);
 app.use("/records", recordRoutes);
 
+
+//receptionist
+app.use("/api/receptionist", receptionistAuthRoutes);
+app.use("/api/receptionist", receptionistRoutes);     // patients
 // 404 Handler
 app.use((req, res) => {
   res.status(404).json({ error: "Endpoint not found" });

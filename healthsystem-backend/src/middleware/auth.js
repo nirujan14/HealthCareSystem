@@ -1,47 +1,43 @@
-// Enhanced authentication middleware with RBAC
-// Path: src/middleware/auth.js
-
+// src/middleware/auth.js
 import jwt from "jsonwebtoken";
 import { Patient, Staff, Role, Permission } from "../models/index.js";
 
 /**
  * Main authentication middleware
- * Supports both Patient and Staff authentication
+ * Supports Patient, Staff, and Receptionist
  */
 export const authenticate = async (req, res, next) => {
   try {
     const header = req.headers.authorization || "";
     const token = header.startsWith("Bearer ") ? header.slice(7) : null;
-    
+
     if (!token) {
       return res.status(401).json({ error: "No token provided" });
     }
 
-    // Verify token
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Payload structure: { id, userType, role }
+
     if (!payload.id || !payload.userType) {
       return res.status(401).json({ error: "Invalid token structure" });
     }
 
-    // Fetch user based on type
     let user;
+
     if (payload.userType === "PATIENT") {
       user = await Patient.findById(payload.id);
       if (!user || !user.isActive) {
         return res.status(401).json({ error: "Patient not found or inactive" });
       }
-    } else if (payload.userType === "STAFF") {
-      user = await Staff.findById(payload.id).populate("hospital department");
+    } else if (["STAFF", "RECEPTIONIST"].includes(payload.userType)) {
+      // Fetch as Staff
+      user = await Staff.findById(payload.id); // no populate to avoid strictPopulate errors
       if (!user || !user.isActive) {
-        return res.status(401).json({ error: "Staff not found or inactive" });
+        return res.status(401).json({ error: `${payload.userType} not found or inactive` });
       }
     } else {
       return res.status(401).json({ error: "Invalid user type" });
     }
 
-    // Attach user info to request
     req.user = {
       id: user._id,
       userType: payload.userType,
@@ -75,25 +71,33 @@ export const requirePatient = (req, res, next) => {
 };
 
 /**
- * Middleware to check if user is staff
+ * Middleware to check if user is staff or receptionist
  */
 export const requireStaff = (req, res, next) => {
-  if (req.user.userType !== "STAFF") {
+  if (!["STAFF", "RECEPTIONIST"].includes(req.user.userType)) {
     return res.status(403).json({ error: "Staff access required" });
   }
   next();
 };
 
 /**
+ * Middleware for receptionist only
+ */
+export const requireReceptionist = (req, res, next) => {
+  if (req.user.userType !== "RECEPTIONIST") {
+    return res.status(403).json({ error: "Receptionist access required" });
+  }
+  next();
+};
+
+/**
  * Middleware to check specific staff roles
- * Usage: requireRole(["DOCTOR", "NURSE"])
  */
 export const requireRole = (allowedRoles) => {
   return (req, res, next) => {
-    if (req.user.userType !== "STAFF") {
+    if (!["STAFF", "RECEPTIONIST"].includes(req.user.userType)) {
       return res.status(403).json({ error: "Staff access required" });
     }
-    
     if (!allowedRoles.includes(req.user.role)) {
       return res.status(403).json({ 
         error: "Insufficient permissions",
@@ -101,20 +105,17 @@ export const requireRole = (allowedRoles) => {
         yourRole: req.user.role
       });
     }
-    
     next();
   };
 };
 
 /**
  * Middleware to check specific permissions
- * Usage: requirePermission("READ_RECORD")
  */
 export const requirePermission = (requiredPermission) => {
   return async (req, res, next) => {
     try {
       if (req.user.userType === "PATIENT") {
-        // Patients have limited predefined permissions
         const patientPermissions = [
           "READ_OWN_PATIENT",
           "UPDATE_OWN_PATIENT",
@@ -124,25 +125,20 @@ export const requirePermission = (requiredPermission) => {
           "READ_OWN_RECORD",
           "READ_OWN_PAYMENT"
         ];
-        
         if (!patientPermissions.includes(requiredPermission)) {
           return res.status(403).json({ error: "Insufficient permissions" });
         }
-        
         return next();
       }
 
-      // For staff, check role permissions from database
+      // Staff/Receptionist permission check
       const role = await Role.findOne({ name: req.user.role }).populate("permissions");
-      
       if (!role) {
         return res.status(403).json({ error: "Role not found" });
       }
-
       const hasPermission = role.permissions.some(
         p => p.name === requiredPermission && p.isActive
       );
-
       if (!hasPermission) {
         return res.status(403).json({ 
           error: "Insufficient permissions",
@@ -150,7 +146,6 @@ export const requirePermission = (requiredPermission) => {
           yourRole: req.user.role
         });
       }
-
       next();
     } catch (error) {
       return res.status(500).json({ error: "Permission check failed" });
@@ -160,38 +155,30 @@ export const requirePermission = (requiredPermission) => {
 
 /**
  * Middleware to check resource-action permission
- * Usage: requireResourcePermission("RECORD", "CREATE")
  */
 export const requireResourcePermission = (resource, action) => {
   return async (req, res, next) => {
     try {
       if (req.user.userType === "PATIENT") {
-        // Patients can only access their own resources
         const allowedActions = {
           PATIENT: ["READ", "UPDATE"],
           APPOINTMENT: ["READ", "CREATE", "DELETE"],
           RECORD: ["READ"],
           PAYMENT: ["READ"]
         };
-        
         if (!allowedActions[resource]?.includes(action)) {
           return res.status(403).json({ error: "Insufficient permissions" });
         }
-        
         return next();
       }
 
-      // For staff, check role permissions
+      // Staff/Receptionist check
       const role = await Role.findOne({ name: req.user.role }).populate("permissions");
-      
-      if (!role) {
-        return res.status(403).json({ error: "Role not found" });
-      }
+      if (!role) return res.status(403).json({ error: "Role not found" });
 
       const hasPermission = role.permissions.some(
         p => p.resource === resource && p.action === action && p.isActive
       );
-
       if (!hasPermission) {
         return res.status(403).json({ 
           error: "Insufficient permissions",
@@ -199,7 +186,6 @@ export const requireResourcePermission = (resource, action) => {
           yourRole: req.user.role
         });
       }
-
       next();
     } catch (error) {
       return res.status(500).json({ error: "Permission check failed" });
@@ -209,50 +195,34 @@ export const requireResourcePermission = (resource, action) => {
 
 /**
  * Middleware to check if staff belongs to specific hospital
- * Usage: requireHospital (checks against req.params.hospitalId or req.body.hospital)
  */
 export const requireHospital = (req, res, next) => {
-  if (req.user.userType !== "STAFF") {
-    return next(); // Skip check for patients
-  }
-
+  if (!["STAFF", "RECEPTIONIST"].includes(req.user.userType)) return next();
   const hospitalId = req.params.hospitalId || req.body.hospital;
-  
-  if (!hospitalId) {
-    return next(); // No hospital specified, skip check
-  }
-
+  if (!hospitalId) return next();
   if (req.user.hospitalId?.toString() !== hospitalId.toString()) {
     return res.status(403).json({ 
       error: "Access denied: You can only access data from your hospital" 
     });
   }
-
   next();
 };
 
 /**
  * Combine multiple middleware
- * Usage: combineMiddleware([authenticate, requireStaff, requireRole(["DOCTOR"])])
  */
 export const combineMiddleware = (middlewares) => {
   return (req, res, next) => {
     const executeMiddleware = (index) => {
-      if (index >= middlewares.length) {
-        return next();
-      }
-      
+      if (index >= middlewares.length) return next();
       middlewares[index](req, res, (err) => {
-        if (err) {
-          return next(err);
-        }
+        if (err) return next(err);
         executeMiddleware(index + 1);
       });
     };
-    
     executeMiddleware(0);
   };
 };
 
-// Export legacy auth for backward compatibility
+// Legacy export
 export const auth = authenticate;

@@ -3,6 +3,7 @@
 
 export { default as Patient } from "./Patient.js";
 export { default as Staff } from "./Staff.js";
+export { default as Receptionist } from "./Receptionist/Receptionist.js"; 
 export { default as Hospital } from "./Hospital.js";
 export { default as Department } from "./Department.js";
 export { default as Appointment } from "./Appointment.js";
