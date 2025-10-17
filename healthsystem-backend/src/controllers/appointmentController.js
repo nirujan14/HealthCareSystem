@@ -149,12 +149,14 @@ export const create = asyncHandler(async (req, res) => {
 
 export const cancel = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { reason } = req.body;
+  // Make reason optional with default fallback
+  const reason = req.body?.reason || "Cancelled by patient";
   
   console.log("=== CANCEL REQUEST ===");
   console.log("Appointment ID:", id);
   console.log("User ID:", req.user.id);
   console.log("Reason:", reason);
+  console.log("Body:", req.body); // Debug
   
   try {
     // Find appointment
@@ -184,7 +186,7 @@ export const cancel = asyncHandler(async (req, res) => {
 
     // Update appointment
     appt.status = "CANCELLED";
-    appt.cancellationReason = reason || "Cancelled by patient";
+    appt.cancellationReason = reason;
     appt.cancelledBy = {
       userId: req.user.id,
       userType: "PATIENT"
