@@ -5,8 +5,11 @@ import {
   FlatList, 
   RefreshControl, 
   Alert,
-  ActivityIndicator 
+  ActivityIndicator,
+  Modal,
+  TouchableOpacity
 } from "react-native";
+import DateTimePicker from '@react-native-community/datetimepicker';
 import PCard from "../../src/components/PCard";
 import PButton from "../../src/components/PButton";
 import colors from "../../src/constants/colors";
@@ -17,6 +20,17 @@ export default function AppointmentsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [cancellingId, setCancellingId] = useState(null);
+  const [rescheduling, setRescheduling] = useState(false);
+  
+  // Reschedule modal state
+  const [rescheduleModal, setRescheduleModal] = useState({
+    visible: false,
+    appointmentId: null,
+    hospitalName: "",
+    currentDate: new Date()
+  });
+  const [newDate, setNewDate] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
 
   const loadAppointments = async (showRefresh = false) => {
     try {
@@ -30,7 +44,15 @@ export default function AppointmentsScreen() {
       setItems(data);
     } catch (error) {
       console.error("Failed to load appointments:", error);
-      Alert.alert("Error", "Failed to load appointments");
+      
+      let errorMessage = "Failed to load appointments";
+      if (error.response?.data?.error) {
+        errorMessage = error.response.data.error;
+      } else if (error.request) {
+        errorMessage = "Network error. Please check your connection.";
+      }
+      
+      Alert.alert("Error", errorMessage);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -71,10 +93,10 @@ export default function AppointmentsScreen() {
     }
   };
 
-  const handleCancel = async (id, hospital) => {
+  const handleCancel = async (id, hospitalName) => {
     Alert.alert(
       "Cancel Appointment",
-      `Are you sure you want to cancel your appointment at ${hospital}?`,
+      `Are you sure you want to cancel your appointment at ${hospitalName}?`,
       [
         { text: "No", style: "cancel" },
         { 
@@ -83,12 +105,29 @@ export default function AppointmentsScreen() {
           onPress: async () => {
             try {
               setCancellingId(id);
-              await client.patch(`/appointments/${id}/cancel`);
-              await loadAppointments();
-              Alert.alert("Success", "Appointment cancelled successfully");
+              
+              // Make the cancel request
+              const response = await client.patch(`/appointments/${id}/cancel`);
+              
+              if (response.status === 200) {
+                await loadAppointments();
+                Alert.alert("Success", "Appointment cancelled successfully");
+              }
             } catch (error) {
               console.error("Cancel failed:", error);
-              Alert.alert("Error", "Failed to cancel appointment");
+              
+              // Better error messages
+              let errorMessage = "Failed to cancel appointment";
+              
+              if (error.response?.data?.error) {
+                errorMessage = error.response.data.error;
+              } else if (error.request) {
+                errorMessage = "Network error. Please check your connection.";
+              } else if (error.message) {
+                errorMessage = error.message;
+              }
+              
+              Alert.alert("Error", errorMessage);
             } finally {
               setCancellingId(null);
             }
@@ -96,6 +135,79 @@ export default function AppointmentsScreen() {
         }
       ]
     );
+  };
+
+  const handleReschedule = (appointmentId, hospitalName, currentDate) => {
+    const appointmentDate = new Date(currentDate);
+    
+    // Set new date to at least tomorrow
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0); // Default to 9 AM
+    
+    setRescheduleModal({
+      visible: true,
+      appointmentId,
+      hospitalName,
+      currentDate: appointmentDate
+    });
+    
+    // Set new date to tomorrow or current appointment date if it's in the future
+    setNewDate(appointmentDate > tomorrow ? appointmentDate : tomorrow);
+  };
+
+  const confirmReschedule = async () => {
+    // Validate new date
+    if (newDate <= new Date()) {
+      Alert.alert("Invalid Date", "Please select a future date and time.");
+      return;
+    }
+
+    try {
+      setRescheduling(true);
+      
+      const response = await client.patch(
+        `/appointments/${rescheduleModal.appointmentId}/reschedule`,
+        { newDate: newDate.toISOString() }
+      );
+      
+      if (response.status === 200) {
+        setRescheduleModal({ 
+          visible: false, 
+          appointmentId: null, 
+          hospitalName: "", 
+          currentDate: new Date() 
+        });
+        await loadAppointments();
+        Alert.alert("Success", "Appointment rescheduled successfully");
+      }
+    } catch (error) {
+      console.error("Reschedule failed:", error);
+      
+      let errorMessage = "Failed to reschedule appointment";
+      
+      if (error.response?.data?.error) {
+        errorMessage = error.response.data.error;
+      } else if (error.request) {
+        errorMessage = "Network error. Please check your connection.";
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      Alert.alert("Error", errorMessage);
+    } finally {
+      setRescheduling(false);
+    }
+  };
+
+  const closeRescheduleModal = () => {
+    setRescheduleModal({ 
+      visible: false, 
+      appointmentId: null, 
+      hospitalName: "", 
+      currentDate: new Date() 
+    });
+    setShowDatePicker(false);
   };
 
   const formatDateTime = (dateString) => {
@@ -119,6 +231,10 @@ export default function AppointmentsScreen() {
     const statusColor = getStatusColor(item.status);
     const statusText = getStatusText(item.status);
 
+    // Extract hospital and department names safely
+    const hospitalName = item.hospital?.name || item.hospital || "Unknown Hospital";
+    const departmentName = item.department?.name || item.department || "General";
+
     return (
       <PCard style={{ marginBottom: 16, padding: 16 }}>
         {/* Header */}
@@ -130,20 +246,20 @@ export default function AppointmentsScreen() {
               color: colors.text,
               marginBottom: 4 
             }}>
-              {item.hospital}
+              {hospitalName}
             </Text>
             <Text style={{ 
               fontSize: 14, 
               color: colors.textMuted,
               marginBottom: 8 
             }}>
-              {item.department}
+              {departmentName}
             </Text>
           </View>
           
           {/* Status Badge */}
           <View style={{ 
-            backgroundColor: `${statusColor}15`, // 15% opacity
+            backgroundColor: `${statusColor}15`,
             paddingHorizontal: 12,
             paddingVertical: 6,
             borderRadius: 16,
@@ -197,17 +313,28 @@ export default function AppointmentsScreen() {
               marginRight: 12
             }}>
               <Text style={{ color: colors.white, fontWeight: '600', fontSize: 14 }}>
-                {item.doctor.name?.charAt(0) || 'D'}
+                {item.doctor.fullName?.charAt(0) || item.doctor.name?.charAt(0) || 'D'}
               </Text>
             </View>
             <View>
               <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>
-                Dr. {item.doctor.name}
+                Dr. {item.doctor.fullName || item.doctor.name || "Doctor"}
               </Text>
-              <Text style={{ fontSize: 12, color: colors.textMuted }}>
-                {item.doctor.specialization}
-              </Text>
+              {item.doctor.specialization && (
+                <Text style={{ fontSize: 12, color: colors.textMuted }}>
+                  {item.doctor.specialization}
+                </Text>
+              )}
             </View>
+          </View>
+        )}
+
+        {/* Appointment Number */}
+        {item.appointmentNumber && (
+          <View style={{ marginTop: 8 }}>
+            <Text style={{ fontSize: 12, color: colors.textMuted }}>
+              Appointment No: {item.appointmentNumber}
+            </Text>
           </View>
         )}
 
@@ -215,18 +342,20 @@ export default function AppointmentsScreen() {
         {item.status === "BOOKED" && (
           <View style={{ marginTop: 16, flexDirection: 'row', gap: 12 }}>
             <PButton 
-              title="Cancel Appointment" 
+              title="Cancel" 
               type="outline" 
-              onPress={() => handleCancel(item._id, item.hospital)} 
+              onPress={() => handleCancel(item._id, hospitalName)} 
               style={{ flex: 1 }}
               loading={cancellingId === item._id}
-              disabled={cancellingId !== null}
+              disabled={cancellingId !== null || rescheduling}
+              textStyle={{ color: colors.danger }}
             />
             <PButton 
               title="Reschedule" 
               type="primary" 
-              onPress={() => {/* Add reschedule logic */}}
+              onPress={() => handleReschedule(item._id, hospitalName, item.date)}
               style={{ flex: 1 }}
+              disabled={cancellingId !== null || rescheduling}
             />
           </View>
         )}
@@ -281,6 +410,118 @@ export default function AppointmentsScreen() {
         }
         showsVerticalScrollIndicator={false}
       />
+
+      {/* Reschedule Modal */}
+      <Modal
+        visible={rescheduleModal.visible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={closeRescheduleModal}
+      >
+        <View style={{
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          justifyContent: 'center',
+          padding: 20
+        }}>
+          <PCard style={{ padding: 20 }}>
+            <Text style={{
+              fontSize: 20,
+              fontWeight: '700',
+              color: colors.text,
+              marginBottom: 8
+            }}>
+              Reschedule Appointment
+            </Text>
+            
+            <Text style={{
+              fontSize: 14,
+              color: colors.textMuted,
+              marginBottom: 20
+            }}>
+              {rescheduleModal.hospitalName}
+            </Text>
+
+            {/* Current Date */}
+            <View style={{ marginBottom: 16 }}>
+              <Text style={{ fontSize: 12, color: colors.textMuted, marginBottom: 4 }}>
+                Current Date & Time
+              </Text>
+              <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>
+                {rescheduleModal.currentDate.toLocaleString('en-US', {
+                  weekday: 'short',
+                  year: 'numeric',
+                  month: 'short',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit'
+                })}
+              </Text>
+            </View>
+
+            {/* New Date */}
+            <View style={{ marginBottom: 20 }}>
+              <Text style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8 }}>
+                New Date & Time *
+              </Text>
+              <TouchableOpacity
+                style={{
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  borderRadius: 12,
+                  padding: 16,
+                  backgroundColor: colors.background
+                }}
+                onPress={() => setShowDatePicker(true)}
+              >
+                <Text style={{ color: colors.text, fontSize: 14 }}>
+                  {newDate.toLocaleString('en-US', {
+                    weekday: 'short',
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  })}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {showDatePicker && (
+              <DateTimePicker
+                value={newDate}
+                mode="datetime"
+                display="default"
+                onChange={(event, selectedDate) => {
+                  setShowDatePicker(false);
+                  if (selectedDate) {
+                    setNewDate(selectedDate);
+                  }
+                }}
+                minimumDate={new Date()}
+              />
+            )}
+
+            {/* Buttons */}
+            <View style={{ flexDirection: 'row', gap: 12 }}>
+              <PButton
+                title="Cancel"
+                type="outline"
+                onPress={closeRescheduleModal}
+                style={{ flex: 1 }}
+                disabled={rescheduling}
+              />
+              <PButton
+                title="Confirm"
+                type="primary"
+                onPress={confirmReschedule}
+                style={{ flex: 1 }}
+                loading={rescheduling}
+              />
+            </View>
+          </PCard>
+        </View>
+      </Modal>
     </View>
   );
 }

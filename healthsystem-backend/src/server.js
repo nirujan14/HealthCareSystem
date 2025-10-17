@@ -16,6 +16,10 @@ import patientRoutes from "./routes/patientRoutes.js";
 import staffRoutes from "./routes/staffRoutes.js";
 import appointmentRoutes from "./routes/appointmentRoutes.js";
 import recordRoutes from "./routes/recordRoutes.js";
+import hospitalRoutes from "./routes/hospitalRoutes.js";
+import departmentRoutes from "./routes/departmentRoutes.js";
+import checkinRoutes from "./routes/checkinRoutes.js";
+import staffAssignmentRoutes from "./routes/staffAssignmentRoutes.js";
 
 import { attachSocket } from "./socket.js";
 
@@ -65,7 +69,11 @@ app.get("/", (req, res) => {
       patients: "/patients",
       staff: "/staff",
       appointments: "/appointments",
-      records: "/records"
+      records: "/records",
+      hospitals: "/hospitals",
+      departments: "/departments",
+      checkin: "/checkin",
+      staffAssignment: "/staff-assignment"
     }
   });
 });
@@ -80,6 +88,10 @@ app.use("/patients", patientRoutes);
 app.use("/staff", staffRoutes);
 app.use("/appointments", appointmentRoutes);
 app.use("/records", recordRoutes);
+app.use("/hospitals", hospitalRoutes);
+app.use("/departments", departmentRoutes);
+app.use("/checkin", checkinRoutes);
+app.use("/staff-assignment", staffAssignmentRoutes);
 
 
 //receptionist

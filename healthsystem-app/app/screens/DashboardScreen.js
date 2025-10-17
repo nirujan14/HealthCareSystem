@@ -146,7 +146,7 @@ export default function DashboardScreen() {
           {next ? (
             <>
               <Text style={{ color: colors.text, fontSize: 15 }}>
-                {next.hospital} • {next.department}
+                {next.hospital?.name || next.hospital} • {next.department?.name || next.department}
               </Text>
               <Text style={{ color: colors.textMuted, marginTop: 4 }}>
                 {new Date(next.date).toLocaleString()}
