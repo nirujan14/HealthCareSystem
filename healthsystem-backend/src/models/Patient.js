@@ -90,7 +90,7 @@ const patientSchema = new mongoose.Schema(
     preferredLanguage: {
       type: String,
       enum: ["SINHALA", "TAMIL", "ENGLISH"],
-      default: "SINHALA"
+      default: "ENGLISH"
     },
     occupation: String,
     maritalStatus: {

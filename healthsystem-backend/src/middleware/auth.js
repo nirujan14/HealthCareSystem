@@ -1,6 +1,7 @@
 // src/middleware/auth.js
 import jwt from "jsonwebtoken";
 import { Patient, Staff, Role, Permission } from "../models/index.js";
+import Receptionist from "../models/Receptionist/Receptionist.js"; // ✅ Import Receptionist model
 
 /**
  * Main authentication middleware
@@ -23,27 +24,42 @@ export const authenticate = async (req, res, next) => {
 
     let user;
 
+    // ✅ PATIENT authentication
     if (payload.userType === "PATIENT") {
       user = await Patient.findById(payload.id);
-      if (!user || !user.isActive) {
+      if (!user || user.isActive === false) {
         return res.status(401).json({ error: "Patient not found or inactive" });
       }
-    } else if (["STAFF", "RECEPTIONIST"].includes(payload.userType)) {
-      // Fetch as Staff
-      user = await Staff.findById(payload.id); // no populate to avoid strictPopulate errors
-      if (!user || !user.isActive) {
-        return res.status(401).json({ error: `${payload.userType} not found or inactive` });
+    }
+
+    // ✅ RECEPTIONIST authentication
+    else if (payload.userType === "RECEPTIONIST") {
+      user = await Receptionist.findById(payload.id);
+      if (!user || user.isActive === false) {
+        return res.status(401).json({ error: "RECEPTIONIST not found or inactive" });
       }
-    } else {
+    }
+
+    // ✅ STAFF authentication
+    else if (payload.userType === "STAFF") {
+      user = await Staff.findById(payload.id);
+      if (!user || user.isActive === false) {
+        return res.status(401).json({ error: "STAFF not found or inactive" });
+      }
+    }
+
+    // ❌ Unknown userType
+    else {
       return res.status(401).json({ error: "Invalid user type" });
     }
 
+    // ✅ Attach user to request
     req.user = {
       id: user._id,
       userType: payload.userType,
       role: payload.role,
       email: user.email,
-      fullName: user.fullName,
+      fullName: user.fullName || user.name, // fallback for Receptionist model
       hospitalId: user.hospital?._id,
       departmentId: user.department?._id
     };
@@ -56,6 +72,7 @@ export const authenticate = async (req, res, next) => {
     if (error.name === "TokenExpiredError") {
       return res.status(401).json({ error: "Token expired" });
     }
+    console.error("Auth Error:", error);
     return res.status(401).json({ error: "Authentication failed" });
   }
 };
@@ -99,7 +116,7 @@ export const requireRole = (allowedRoles) => {
       return res.status(403).json({ error: "Staff access required" });
     }
     if (!allowedRoles.includes(req.user.role)) {
-      return res.status(403).json({ 
+      return res.status(403).json({
         error: "Insufficient permissions",
         requiredRoles: allowedRoles,
         yourRole: req.user.role
@@ -137,10 +154,10 @@ export const requirePermission = (requiredPermission) => {
         return res.status(403).json({ error: "Role not found" });
       }
       const hasPermission = role.permissions.some(
-        p => p.name === requiredPermission && p.isActive
+        (p) => p.name === requiredPermission && p.isActive
       );
       if (!hasPermission) {
-        return res.status(403).json({ 
+        return res.status(403).json({
           error: "Insufficient permissions",
           required: requiredPermission,
           yourRole: req.user.role
@@ -177,10 +194,10 @@ export const requireResourcePermission = (resource, action) => {
       if (!role) return res.status(403).json({ error: "Role not found" });
 
       const hasPermission = role.permissions.some(
-        p => p.resource === resource && p.action === action && p.isActive
+        (p) => p.resource === resource && p.action === action && p.isActive
       );
       if (!hasPermission) {
-        return res.status(403).json({ 
+        return res.status(403).json({
           error: "Insufficient permissions",
           required: `${action} on ${resource}`,
           yourRole: req.user.role
@@ -201,8 +218,8 @@ export const requireHospital = (req, res, next) => {
   const hospitalId = req.params.hospitalId || req.body.hospital;
   if (!hospitalId) return next();
   if (req.user.hospitalId?.toString() !== hospitalId.toString()) {
-    return res.status(403).json({ 
-      error: "Access denied: You can only access data from your hospital" 
+    return res.status(403).json({
+      error: "Access denied: You can only access data from your hospital"
     });
   }
   next();
